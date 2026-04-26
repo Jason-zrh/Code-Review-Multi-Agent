@@ -60,7 +60,7 @@ def parse_github_event(event_type: str, payload: dict[str, Any]) -> dict[str, An
         return {
             "action": payload.get("action"),
             "pr": {
-                "id": pr.get("id"),
+                "id": pr.get("number"),  # 注意：这里用 number 而不是 id
                 "title": pr.get("title"),
                 "description": pr.get("body"),
                 "author": pr.get("user", {}).get("login"),
