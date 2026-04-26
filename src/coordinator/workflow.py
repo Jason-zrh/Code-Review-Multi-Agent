@@ -77,6 +77,14 @@ class CodeReviewWorkflow:
             comments = state.get("review_comments", [])
 
             if comments:
+                # 获取 PR 详情以获取正确的 commit SHA
+                pr_details = github.get_pr_details(
+                    owner=state["repo_owner"],
+                    repo=state["repo_name"],
+                    pr_number=state["pr_id"],
+                )
+                commit_id = pr_details.get("head", {}).get("sha", "HEAD")
+
                 # 转换评论格式为 GitHub API 格式（支持字典和 ReviewComment 对象）
                 review_comments = []
                 for c in comments:
@@ -92,15 +100,18 @@ class CodeReviewWorkflow:
                             "line": c.line or 1,
                             "body": f"[{c.category.upper()}] {c.message}",
                         })
-                # 获取最新 commit_id（简化版用 HEAD）
+
+                print(f"Posting {len(review_comments)} comments to PR #{state['pr_id']} with commit {commit_id}")
                 github.create_pr_review(
                     owner=state["repo_owner"],
                     repo=state["repo_name"],
                     pr_number=state["pr_id"],
-                    commit_id="HEAD",
+                    commit_id=commit_id,
                     comments=review_comments,
                 )
-        except Exception:
+                print(f"Successfully posted comments to PR")
+        except Exception as e:
+            print(f"Error posting comments: {e}")
             pass  # 评论失败不影响整体流程
 
         if not state.get("overall_status"):
