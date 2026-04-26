@@ -63,3 +63,38 @@ def test_workflow_with_pr_title(mock_agent_class, mock_llm):
         pr_description="Test description",
     )
     assert "overall_status" in result
+
+
+@patch("src.github.client.GitHubClient")
+@patch("src.agents.code_reviewer.ChatOpenAI")
+@patch("src.agents.code_reviewer.CodeReviewerAgent")
+def test_workflow_posts_review(mock_agent_class, mock_llm, mock_github):
+    """测试工作流发布评论到 GitHub"""
+    mock_agent = MagicMock()
+    mock_agent.analyze_pr.return_value = {
+        "comments": [
+            {
+                "file": "test.py",
+                "line": 10,
+                "severity": "warning",
+                "category": "bug",
+                "message": "Potential null pointer",
+            }
+        ],
+        "overall_status": "success",
+    }
+    mock_agent_class.return_value = mock_agent
+
+    mock_client = MagicMock()
+    mock_github.return_value = mock_client
+
+    workflow = CodeReviewWorkflow()
+    result = workflow.run(
+        pr_id=123,
+        repo_owner="owner",
+        repo_name="repo",
+        files=[{"filename": "test.py", "contents": "code"}],
+    )
+
+    # 验证评论被发布
+    assert mock_client.create_pr_review.called

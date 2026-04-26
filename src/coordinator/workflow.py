@@ -69,7 +69,40 @@ class CodeReviewWorkflow:
         return state
 
     def _node_finish(self, state: ReviewState) -> ReviewState:
-        """完成节点"""
+        """完成节点：发布评论到 GitHub"""
+        from src.github.client import GitHubClient
+
+        try:
+            github = GitHubClient()
+            comments = state.get("review_comments", [])
+
+            if comments:
+                # 转换评论格式为 GitHub API 格式（支持字典和 ReviewComment 对象）
+                review_comments = []
+                for c in comments:
+                    if isinstance(c, dict):
+                        review_comments.append({
+                            "path": c.get("file", ""),
+                            "line": c.get("line") or 1,
+                            "body": f"[{c.get('category', '').upper()}] {c.get('message', '')}",
+                        })
+                    else:
+                        review_comments.append({
+                            "path": c.file,
+                            "line": c.line or 1,
+                            "body": f"[{c.category.upper()}] {c.message}",
+                        })
+                # 获取最新 commit_id（简化版用 HEAD）
+                github.create_pr_review(
+                    owner=state["repo_owner"],
+                    repo=state["repo_name"],
+                    pr_number=state["pr_id"],
+                    commit_id="HEAD",
+                    comments=review_comments,
+                )
+        except Exception:
+            pass  # 评论失败不影响整体流程
+
         if not state.get("overall_status"):
             state["overall_status"] = "success"
         return state
