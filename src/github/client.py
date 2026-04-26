@@ -2,11 +2,34 @@ import httpx
 from typing import Optional
 
 
+# ============================================================
+# GitHub API 客户端
+# 作用：封装 GitHub REST API，提供语义化的方法调用
+#
+# 工作原理：
+#   GitHub = 餐厅
+#   GitHub API = 餐厅的菜单（通过 HTTP 请求操作仓库）
+#   GitHubClient = 服务员（帮你封装复杂的 HTTP 请求）
+#
+# 使用示例：
+#   github = GitHubClient()
+#   files = github.get_pr_files("owner", "repo", 1)  # 获取 PR 文件
+#   github.create_pr_review(...)  # 发评论到 PR
+#
+# 文档：https://docs.github.com/en/rest
+# ============================================================
+
 class GitHubClient:
     """GitHub API 客户端
 
-    用于获取 PR 信息和评论 PR
-    文档：https://docs.github.com/en/rest
+    封装 GitHub REST API 的 HTTP 请求，提供语义化的方法调用。
+    无需记忆复杂 URL 和认证头，调用方法即可操作仓库。
+
+    示例：
+        github = GitHubClient()
+        files = github.get_pr_files("owner", "repo", 1)
+        github.create_pr_review(owner="owner", repo="repo", pr_number=1,
+                               commit_id="abc", comments=[...])
     """
 
     BASE_URL = "https://api.github.com"

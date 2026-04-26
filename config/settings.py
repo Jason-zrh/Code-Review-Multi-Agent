@@ -23,7 +23,8 @@ class Settings(BaseSettings):
 
     # LLM 配置
     openai_api_key: Optional[str] = None
-    openai_model: str = "gpt-4o"
+    openai_model: str = "MiniMax-M2.7"
+    openai_base_url: str = "https://api.minimaxi.com/v1"
 
     # API 配置
     api_host: str = "0.0.0.0"

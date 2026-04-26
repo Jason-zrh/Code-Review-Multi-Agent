@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
@@ -9,8 +10,8 @@ class CodeReviewerAgent:
     """代码审查 Agent
 
     使用 LLM 分析代码，提供 Bug 检测、安全问题、风格建议
-    Phase 1：单 Agent 混合分析
-    Phase 2+：拆分为 Bug/Security/Style 多个 Agent
+    Phase 1: 单 Agent 混合分析
+    Phase 2+: 拆分为 Bug/Security/Style 多个 Agent
     """
 
     def __init__(self):
@@ -20,33 +21,29 @@ class CodeReviewerAgent:
         self.llm = ChatOpenAI(
             model=settings.openai_model,
             api_key=settings.openai_api_key,
-            temperature=0.3,  # 较低温度保证稳定性
+            base_url=settings.openai_base_url,
+            temperature=0.3,  # 较低保证稳定性
         )
 
         # 分析单个文件的 prompt
         self.file_prompt = ChatPromptTemplate.from_messages([
-            ("system", """你是一个专业的代码审查专家。
-分析代码并找出以下问题：
-1. Bug：空指针、数组越界、逻辑错误
-2. 安全：注入漏洞、XSS、权限问题
-3. 风格：命名规范、注释缺失
+            ("system", """You are an expert code reviewer. Analyze Python code and identify issues.
 
-只报告真正的问题，不要鸡蛋里挑骨头。
+Focus on finding REAL bugs only:
+1. SECURITY: SQL injection, XSS, path traversal, command injection, hardcoded secrets
+2. BUGS: null pointer (None), index out of bounds, logic errors, unhandled exceptions, memory leaks
+3. STYLE: missing docstrings, bad naming, unreachable code
 
-返回 JSON 格式：
-{{
-    "file": "文件名",
-    "comments": [
-        {{
-            "line": 行号或null,
-            "severity": "info|warning|error|critical",
-            "category": "bug|security|style",
-            "message": "问题描述"
-        }}
-    ]
-}}
-如果没发现问题，comments 数组为空。"""),
-            ("human", "文件：{filename}\n\n补丁：\n{patch}\n\n代码：\n{code}")
+IMPORTANT RULES:
+- Find at least one issue per file if code exists
+- Report issues that would cause runtime errors or security vulnerabilities
+
+JSON format (pure JSON, no markdown):
+{{"file": "FILENAME", "comments": [{{"line": 1, "severity": "LEVEL", "category": "TYPE", "message": "DESCRIPTION"}}]}}
+Use severity: critical|error|warning|info
+Use category: security|bug|style
+Empty comments array only if code is clean."""),
+            ("human", "File: {filename}\n\nCode:\n{code}")
         ])
 
         # 分析 PR 的 prompt
@@ -81,10 +78,23 @@ class CodeReviewerAgent:
             "patch": patch or "无",
         })
 
-        # 解析 JSON 返回
+        # 解析 JSON 返回（处理 MiniMax 的思考过程标签）
         try:
-            return json.loads(result.content)
-        except json.JSONDecodeError:
+            content = result.content
+
+            # MiniMax 返回格式：<think> ...</think> {...json...}
+            # 先去掉思考过程部分，只保留 JSON
+            think_match = re.search(r'</think>\s*', content, re.DOTALL)
+            if think_match:
+                content = content[think_match.end():]
+
+            # 查找 JSON 对象或数组
+            json_match = re.search(r'\{[\s\S]*\}|\[[\s\S]*\]', content)
+            if json_match:
+                content = json_match.group()
+                return json.loads(content)
+            return {"file": filename, "comments": []}
+        except (json.JSONDecodeError, re.error):
             return {"file": filename, "comments": []}
 
     def analyze_pr(
