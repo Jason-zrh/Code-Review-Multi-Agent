@@ -68,9 +68,9 @@ class CodeReviewWorkflow:
         state["overall_status"] = result.get("overall_status", "success")
         return state
 
-    def _get_file_line_counts(self, files: list) -> dict:
-        """从 patch 中提取每个文件的总行数"""
-        line_counts = {}
+    def _get_file_info(self, files: list) -> dict:
+        """从 patch 中提取每个文件的信息，返回 (行数, 是否有有效patch) 的元组"""
+        file_info = {}
         for f in files:
             filename = f.get("filename", "")
             patch = f.get("patch", "")
@@ -80,16 +80,24 @@ class CodeReviewWorkflow:
                 import re
                 match = re.search(r'@@ -\d+,\d+ \+\d+,(\d+) @@', patch)
                 if match:
-                    line_counts[filename] = int(match.group(1))
+                    file_info[filename] = {
+                        "line_count": int(match.group(1)),
+                        "has_patch": True
+                    }
                 else:
                     # 兜底：统计 patch 中的 + 行数
                     plus_lines = [l for l in patch.splitlines() if l.startswith('+') and not l.startswith('+++')]
                     if plus_lines:
-                        line_counts[filename] = len(plus_lines)
+                        file_info[filename] = {
+                            "line_count": len(plus_lines),
+                            "has_patch": True
+                        }
+                    else:
+                        file_info[filename] = {"line_count": 0, "has_patch": False}
             elif filename:
-                # 没有 patch 的文件，行数为 0 或 1
-                line_counts[filename] = 1
-        return line_counts
+                # 没有 patch 的文件，跳过
+                file_info[filename] = {"line_count": 0, "has_patch": False}
+        return file_info
 
     def _node_finish(self, state: ReviewState) -> ReviewState:
         """完成节点：发布评论到 GitHub"""
@@ -108,11 +116,12 @@ class CodeReviewWorkflow:
                 )
                 commit_id = pr_details.get("head", {}).get("sha", "HEAD")
 
-                # 构建文件行数映射，用于验证行号
-                file_line_counts = self._get_file_line_counts(state.get("files", []))
+                # 构建文件信息映射，用于验证行号和patch有效性
+                file_info = self._get_file_info(state.get("files", []))
 
                 # 转换评论格式为 GitHub API 格式（支持字典和 ReviewComment 对象）
                 review_comments = []
+                skipped = 0
                 for c in comments:
                     if isinstance(c, dict):
                         path = c.get("file", "")
@@ -121,10 +130,16 @@ class CodeReviewWorkflow:
                         path = c.file
                         line = c.line or 1
 
+                    # 跳过没有有效 patch 的文件（空文件或纯文本文件）
+                    info = file_info.get(path, {"has_patch": False, "line_count": 0})
+                    if not info["has_patch"] or info["line_count"] == 0:
+                        skipped += 1
+                        continue
+
                     # 验证行号有效性
-                    max_line = file_line_counts.get(path, 999)
+                    max_line = info["line_count"]
                     if line > max_line:
-                        line = max_line if max_line > 0 else 1
+                        line = max_line
 
                     if isinstance(c, dict):
                         review_comments.append({
@@ -139,15 +154,19 @@ class CodeReviewWorkflow:
                             "body": f"[{c.category.upper()}] {c.message}",
                         })
 
-                print(f"Posting {len(review_comments)} comments to PR #{state['pr_id']} with commit {commit_id}")
-                github.create_pr_review(
-                    owner=state["repo_owner"],
-                    repo=state["repo_name"],
-                    pr_number=state["pr_id"],
-                    commit_id=commit_id,
-                    comments=review_comments,
-                )
-                print(f"Successfully posted comments to PR")
+                if skipped > 0:
+                    print(f"Skipped {skipped} comments on files without valid diff")
+
+                if review_comments:
+                    print(f"Posting {len(review_comments)} comments to PR #{state['pr_id']} with commit {commit_id}")
+                    github.create_pr_review(
+                        owner=state["repo_owner"],
+                        repo=state["repo_name"],
+                        pr_number=state["pr_id"],
+                        commit_id=commit_id,
+                        comments=review_comments,
+                    )
+                    print(f"Successfully posted comments to PR")
         except Exception as e:
             print(f"Error posting comments: {e}")
             pass  # 评论失败不影响整体流程
