@@ -6,89 +6,72 @@ from src.models.schemas import ReviewComment
 # ============================================================
 # 工作流层（LangGraph 状态机）
 # 作用：定义 Multi-Agent 审查流程
-# 核心概念：
-#   - State（状态）：整个流程共享的数据
-#   - Node（节点）：处理步骤，相当于流水线上的工位
-#   - Edge（边）：节点间的连接
 # ============================================================
 
-# ----------------------------------------------------------
-# 状态定义
-# 类似muduo的HttpConnection::MessageState，定义流程中的数据结构
-# ----------------------------------------------------------
 class ReviewState(TypedDict):
-    """审查状态
-
-    整个工作流中共享的数据结构
-    每个节点都可以读取和修改这些数据
-    """
-
-    pr_id: int                     # PR 编号
-    repo_owner: str                # 仓库拥有者
-    repo_name: str                 # 仓库名
-    files: list                    # 改动的文件列表
-    review_comments: NotRequired[list[ReviewComment]]  # 审查结果
-    overall_status: NotRequired[str]  # 整体状态
+    """审查状态"""
+    pr_id: int
+    repo_owner: str
+    repo_name: str
+    files: list
+    pr_title: NotRequired[str]
+    pr_description: NotRequired[str]
+    review_comments: NotRequired[list[ReviewComment]]
+    overall_status: NotRequired[str]
 
 
-# ----------------------------------------------------------
-# 工作流类
-# ----------------------------------------------------------
 class CodeReviewWorkflow:
-    """代码审查工作流
-
-    Phase 1：简单的三节点顺序流程
-    Phase 2+：拆成 Coordinator + Bug/Security/Style Agents
-    """
+    """代码审查工作流"""
 
     def __init__(self):
         self.graph = self._build_graph()
         self.app = self.graph.compile()
 
     def _build_graph(self) -> StateGraph:
-        """构建状态图
-
-        LangGraph 的核心：定义有哪些节点，节点间怎么连接
-
-        当前流程（Phase 1）：
-            [start] -> [analyze] -> [finish] -> END
-        """
+        """构建状态图"""
         builder = StateGraph(ReviewState)
 
-        # 添加处理节点
-        builder.add_node("start", self._node_start)     # 开始
-        builder.add_node("analyze", self._node_analyze) # 分析
-        builder.add_node("finish", self._node_finish)   # 结束
+        builder.add_node("start", self._node_start)
+        builder.add_node("analyze", self._node_analyze)
+        builder.add_node("finish", self._node_finish)
 
-        # 定义流向
-        builder.set_entry_point("start")        # 入口节点
-        builder.add_edge("start", "analyze")   # start -> analyze
-        builder.add_edge("analyze", "finish")   # analyze -> finish
-        builder.add_edge("finish", END)         # finish -> 结束
+        builder.set_entry_point("start")
+        builder.add_edge("start", "analyze")
+        builder.add_edge("analyze", "finish")
+        builder.add_edge("finish", END)
 
         return builder
 
     def _node_start(self, state: ReviewState) -> ReviewState:
-        """开始节点
-
-        初始化：什么都不做，直接传递状态
-        """
+        """开始节点：什么都不做"""
         return state
 
     def _node_analyze(self, state: ReviewState) -> ReviewState:
-        """分析节点
+        """分析节点：调用 LLM 分析代码"""
+        from src.agents.code_reviewer import CodeReviewerAgent
 
-        Phase 1：空实现，后续接入 LLM 做代码分析
-        """
-        state["review_comments"] = []
+        agent = CodeReviewerAgent()
+        files = state.get("files", [])
+
+        # 如果没有 contents，从 patch 构建
+        for f in files:
+            if "contents" not in f:
+                f["contents"] = f.get("patch", "")
+
+        result = agent.analyze_pr(
+            files=files,
+            pr_title=state.get("pr_title", ""),
+            pr_description=state.get("pr_description", ""),
+        )
+
+        state["review_comments"] = result.get("comments", [])
+        state["overall_status"] = result.get("overall_status", "success")
         return state
 
     def _node_finish(self, state: ReviewState) -> ReviewState:
-        """完成节点
-
-        设置整体状态为成功
-        """
-        state["overall_status"] = "success"
+        """完成节点"""
+        if not state.get("overall_status"):
+            state["overall_status"] = "success"
         return state
 
     def run(
@@ -97,23 +80,17 @@ class CodeReviewWorkflow:
         repo_owner: str,
         repo_name: str,
         files: list,
+        pr_title: str = "",
+        pr_description: str = "",
     ) -> dict:
-        """运行工作流
-
-        Args:
-            pr_id: PR 编号
-            repo_owner: 仓库拥有者
-            repo_name: 仓库名
-            files: 改动的文件列表
-
-        Returns:
-            最终状态字典
-        """
+        """运行工作流"""
         initial_state = ReviewState(
             pr_id=pr_id,
             repo_owner=repo_owner,
             repo_name=repo_name,
             files=files,
+            pr_title=pr_title,
+            pr_description=pr_description,
             review_comments=[],
             overall_status="pending",
         )

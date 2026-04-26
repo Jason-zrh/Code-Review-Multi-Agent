@@ -1,9 +1,6 @@
-# ============================================================
-# 工作流测试
-# 测试 LangGraph 状态机的初始化和执行
-# ============================================================
-
+from unittest.mock import patch, MagicMock
 from src.coordinator.workflow import CodeReviewWorkflow, ReviewState
+from src.models.schemas import ReviewComment
 
 
 def test_review_state_initialization():
@@ -13,10 +10,8 @@ def test_review_state_initialization():
         repo_owner="owner",
         repo_name="repo",
         files=[],
-        review_comments=[],
     )
     assert state["pr_id"] == 123
-    assert state["review_comments"] == []
 
 
 def test_workflow_initialization():
@@ -26,8 +21,17 @@ def test_workflow_initialization():
     assert workflow.app is not None
 
 
-def test_workflow_run():
+@patch("src.agents.code_reviewer.ChatOpenAI")
+@patch("src.agents.code_reviewer.CodeReviewerAgent")
+def test_workflow_run(mock_agent_class, mock_llm):
     """测试工作流执行"""
+    mock_agent = MagicMock()
+    mock_agent.analyze_pr.return_value = {
+        "comments": [],
+        "overall_status": "success",
+    }
+    mock_agent_class.return_value = mock_agent
+
     workflow = CodeReviewWorkflow()
     result = workflow.run(
         pr_id=123,
@@ -36,3 +40,26 @@ def test_workflow_run():
         files=[],
     )
     assert result["overall_status"] == "success"
+
+
+@patch("src.agents.code_reviewer.ChatOpenAI")
+@patch("src.agents.code_reviewer.CodeReviewerAgent")
+def test_workflow_with_pr_title(mock_agent_class, mock_llm):
+    """测试带 PR 标题的工作流"""
+    mock_agent = MagicMock()
+    mock_agent.analyze_pr.return_value = {
+        "comments": [],
+        "overall_status": "success",
+    }
+    mock_agent_class.return_value = mock_agent
+
+    workflow = CodeReviewWorkflow()
+    result = workflow.run(
+        pr_id=123,
+        repo_owner="owner",
+        repo_name="repo",
+        files=[],
+        pr_title="Test PR",
+        pr_description="Test description",
+    )
+    assert "overall_status" in result
