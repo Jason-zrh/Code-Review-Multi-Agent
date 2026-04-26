@@ -68,6 +68,29 @@ class CodeReviewWorkflow:
         state["overall_status"] = result.get("overall_status", "success")
         return state
 
+    def _get_file_line_counts(self, files: list) -> dict:
+        """从 patch 中提取每个文件的总行数"""
+        line_counts = {}
+        for f in files:
+            filename = f.get("filename", "")
+            patch = f.get("patch", "")
+            if patch and filename:
+                # 解析 patch 的 hunk header 获取行数信息
+                # 格式: @@ -start,count +start,count @@
+                import re
+                match = re.search(r'@@ -\d+,\d+ \+\d+,(\d+) @@', patch)
+                if match:
+                    line_counts[filename] = int(match.group(1))
+                else:
+                    # 兜底：统计 patch 中的 + 行数
+                    plus_lines = [l for l in patch.splitlines() if l.startswith('+') and not l.startswith('+++')]
+                    if plus_lines:
+                        line_counts[filename] = len(plus_lines)
+            elif filename:
+                # 没有 patch 的文件，行数为 0 或 1
+                line_counts[filename] = 1
+        return line_counts
+
     def _node_finish(self, state: ReviewState) -> ReviewState:
         """完成节点：发布评论到 GitHub"""
         from src.github.client import GitHubClient
@@ -85,19 +108,34 @@ class CodeReviewWorkflow:
                 )
                 commit_id = pr_details.get("head", {}).get("sha", "HEAD")
 
+                # 构建文件行数映射，用于验证行号
+                file_line_counts = self._get_file_line_counts(state.get("files", []))
+
                 # 转换评论格式为 GitHub API 格式（支持字典和 ReviewComment 对象）
                 review_comments = []
                 for c in comments:
                     if isinstance(c, dict):
+                        path = c.get("file", "")
+                        line = c.get("line") or 1
+                    else:
+                        path = c.file
+                        line = c.line or 1
+
+                    # 验证行号有效性
+                    max_line = file_line_counts.get(path, 999)
+                    if line > max_line:
+                        line = max_line if max_line > 0 else 1
+
+                    if isinstance(c, dict):
                         review_comments.append({
-                            "path": c.get("file", ""),
-                            "line": c.get("line") or 1,
+                            "path": path,
+                            "line": line,
                             "body": f"[{c.get('category', '').upper()}] {c.get('message', '')}",
                         })
                     else:
                         review_comments.append({
-                            "path": c.file,
-                            "line": c.line or 1,
+                            "path": path,
+                            "line": line,
                             "body": f"[{c.category.upper()}] {c.message}",
                         })
 
