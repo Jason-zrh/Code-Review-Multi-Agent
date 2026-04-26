@@ -1,3 +1,8 @@
+# ============================================================
+# 数据模型测试
+# 测试 schemas.py 中定义的各种模型
+# ============================================================
+
 from src.models.schemas import PullRequest, FileChange, ReviewResult, ReviewComment
 
 

@@ -1,31 +1,51 @@
 # Code Review Multi-Agent
 
-> 基于 Multi-Agent 架构的 AI 代码审查系统
+> 基于 LangGraph Multi-Agent 架构的 AI 代码审查系统
 
 ## 项目状态
 
-**状态**：规划中
+**状态**：Phase 1 开发中
 
-## 项目简介
+## 快速开始
 
-本项目旨在构建一个 Multi-Agent 代码审查系统，能够自动分析 GitHub PR，从 Bug 检测、安全漏洞、代码风格等多个维度给出专业反馈。
+```bash
+# 安装依赖
+python3.11 -m pip install -r requirements.txt
 
-## 核心特性
+# 运行服务
+python3.11 -m uvicorn src.main:app --reload
 
-- 🤖 **Multi-Agent 协作**：协调者 + 专业审查 Agent 分层设计
-- 🔍 **多维度审查**：Bug、安全、风格、性能、架构
-- 🔗 **GitHub 集成**：Webhook 自动触发，PR 下自动评论
-- 📊 **可视化报告**：按严重程度排序，引用具体代码行
+# 运行测试
+python3.11 -m pytest tests/ -v
+```
 
 ## 技术栈
 
-- Python (LangChain Multi-Agent)
-- C++ (静态分析规则引擎)
-- Docker
-- FastAPI
-- Redis (消息队列)
+| 层级 | 技术 |
+|------|------|
+| Multi-Agent 框架 | LangGraph |
+| API 框架 | FastAPI |
+| 消息队列 | Redis Streams（后续） |
+| 容器化 | Docker |
 
-## 文档
+## 项目结构
 
-- [项目规划](PROJECT_PLAN.md) - 详细架构设计
-- [对话记录](CONVERSATION_LOG.md) - 项目决策过程
+```
+Code-Review-Agent/
+├── src/
+│   ├── main.py              # FastAPI 应用入口
+│   ├── models/schemas.py    # 数据模型（PR、审查结果）
+│   ├── github/webhook.py    # GitHub Webhook 验证和解析
+│   ├── coordinator/workflow.py  # LangGraph 工作流
+│   └── api/routes.py        # API 路由定义
+├── tests/                   # 测试
+├── config/settings.py       # 配置
+├── requirements.txt
+└── Dockerfile
+```
+
+## 开发计划
+
+- [x] Phase 1.1：项目初始化（基础结构、模型、Webhook、工作流）
+- [ ] Phase 1.2：GitHub API 接入、LLM 代码分析、PR 评论
+- [ ] Phase 2：Multi-Agent 并行执行

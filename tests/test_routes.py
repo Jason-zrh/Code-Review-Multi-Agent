@@ -1,3 +1,8 @@
+# ============================================================
+# API 路由测试
+# 测试 /webhook 和 /health 端点
+# ============================================================
+
 from fastapi.testclient import TestClient
 from src.main import app
 

@@ -1,3 +1,8 @@
+# ============================================================
+# 工作流测试
+# 测试 LangGraph 状态机的初始化和执行
+# ============================================================
+
 from src.coordinator.workflow import CodeReviewWorkflow, ReviewState
 
 
