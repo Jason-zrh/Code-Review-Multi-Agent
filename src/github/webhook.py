@@ -60,7 +60,11 @@ def parse_github_event(event_type: str, payload: dict[str, Any]) -> dict[str, An
         return {
             "action": payload.get("action"),
             "pr": {
-                "id": pr.get("number"),  # 注意：这里用 number 而不是 id
+                # BUG FIX: GitHub API 使用 PR number 而不是内部全局 ID
+                # GitHub webhook payload 中 pull_request.id 是全局唯一整数（如 3585522396）
+                # 但 GET /repos/{owner}/{repo}/pulls/{number}/files 需要的是 PR 编号（如 2）
+                # 使用 id 而非 number 会导致 404 错误
+                "id": pr.get("number"),
                 "title": pr.get("title"),
                 "description": pr.get("body"),
                 "author": pr.get("user", {}).get("login"),

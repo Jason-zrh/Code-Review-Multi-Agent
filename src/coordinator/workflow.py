@@ -69,7 +69,13 @@ class CodeReviewWorkflow:
         return state
 
     def _get_file_info(self, files: list) -> dict:
-        """从 patch 中提取每个文件的信息，返回 (行数, 是否有有效patch) 的元组"""
+        """从 patch 中提取每个文件的信息，用于验证评论行号和 patch 有效性
+
+        GitHub PR Review API 对行号有严格限制：
+        1. 行号必须指向 patch 中实际存在的行
+        2. 空文件或没有有效 patch 的文件无法发表评论
+        3. LLM 生成的行号可能超出文件实际范围，需要验证
+        """
         file_info = {}
         for f in files:
             filename = f.get("filename", "")
@@ -77,6 +83,7 @@ class CodeReviewWorkflow:
             if patch and filename:
                 # 解析 patch 的 hunk header 获取行数信息
                 # 格式: @@ -start,count +start,count @@
+                # 例如: @@ -1,33 +1,37 @@ 表示原文件 33 行，新文件 37 行
                 import re
                 match = re.search(r'@@ -\d+,\d+ \+\d+,(\d+) @@', patch)
                 if match:
@@ -108,7 +115,10 @@ class CodeReviewWorkflow:
             comments = state.get("review_comments", [])
 
             if comments:
-                # 获取 PR 详情以获取正确的 commit SHA
+                # BUG FIX: 不能使用 "HEAD" 字符串作为 commit_id
+                # GitHub PR Review API 要求提供有效的 40 位 SHA-1 提交哈希
+                # "HEAD" 不是有效的 SHA，会导致 422 Unprocessable Entity 错误
+                # 必须从 PR 详情中获取实际的 commit SHA
                 pr_details = github.get_pr_details(
                     owner=state["repo_owner"],
                     repo=state["repo_name"],
@@ -130,13 +140,18 @@ class CodeReviewWorkflow:
                         path = c.file
                         line = c.line or 1
 
-                    # 跳过没有有效 patch 的文件（空文件或纯文本文件）
+                    # BUG FIX: 跳过没有有效 patch 的文件的评论
+                    # GitHub PR Review API 无法在空文件或纯文本文件上发表评论
+                    # 这些文件的 patch 为空或无效（如 .txt 文件）
+                    # 会导致 "Line could not be resolved" 的 422 错误
                     info = file_info.get(path, {"has_patch": False, "line_count": 0})
                     if not info["has_patch"] or info["line_count"] == 0:
                         skipped += 1
                         continue
 
-                    # 验证行号有效性
+                    # 验证行号有效性：LLM 生成的行号可能超出文件实际范围
+                    # 如果 LLM 报告的 line 号大于文件的总行数，会导致 422 错误
+                    # 需要将行号限制在文件实际行数范围内
                     max_line = info["line_count"]
                     if line > max_line:
                         line = max_line
