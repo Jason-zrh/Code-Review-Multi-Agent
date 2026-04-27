@@ -49,6 +49,14 @@ class ReviewComment(BaseModel):
     message: str                   # 具体问题描述
 
 
+class RouteResult(BaseModel):
+    """路由结果模型
+
+    Phase 2: 路由器分类文件并返回路由结果
+    """
+    routes: dict[str, list[str]]  # filename -> list of categories
+
+
 class ReviewResult(BaseModel):
     """审查结果模型
 
