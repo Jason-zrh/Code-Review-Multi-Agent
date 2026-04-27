@@ -1,12 +1,45 @@
-from typing import TypedDict, NotRequired
+from typing import TypedDict, NotRequired, Annotated
+from langgraph.types import Send
 from langgraph.graph import StateGraph, END
 from src.models.schemas import ReviewComment
 
 
 # ============================================================
 # 工作流层（LangGraph 状态机）
-# 作用：定义 Multi-Agent 审查流程
+# 作用：定义 Multi-Agent 审查流程（Phase 2 并行架构）
 # ============================================================
+
+def _merge_agent_results(left: dict, right: dict) -> dict:
+    """Reducer for merging agent_results from parallel nodes.
+
+    Each node returns {"agent_results": {"agent_name": [...]}}.
+    This reducer combines all agent results into a single dict.
+    """
+    result = {}
+    # Process left
+    if left:
+        for key, value in left.items():
+            if key == "agent_results" and isinstance(value, dict):
+                for agent_name, agent_data in value.items():
+                    if agent_name not in result:
+                        result[agent_name] = agent_data
+                    elif isinstance(agent_data, list):
+                        result[agent_name] = result.get(agent_name, []) + agent_data
+            else:
+                result[key] = value
+    # Process right
+    if right:
+        for key, value in right.items():
+            if key == "agent_results" and isinstance(value, dict):
+                for agent_name, agent_data in value.items():
+                    if agent_name not in result:
+                        result[agent_name] = agent_data
+                    elif isinstance(agent_data, list):
+                        result[agent_name] = result.get(agent_name, []) + agent_data
+            else:
+                result[key] = value
+    return {"agent_results": result}
+
 
 class ReviewState(TypedDict):
     """审查状态"""
@@ -16,12 +49,14 @@ class ReviewState(TypedDict):
     files: list
     pr_title: NotRequired[str]
     pr_description: NotRequired[str]
-    review_comments: NotRequired[list[ReviewComment]]
+    routes: NotRequired[dict]          # Router result: {"routes": {"filename": ["security", "bug", ...]}}
+    agent_results: Annotated[NotRequired[dict], _merge_agent_results]  # Results from all agents
+    review_comments: NotRequired[list]
     overall_status: NotRequired[str]
 
 
 class CodeReviewWorkflow:
-    """代码审查工作流"""
+    """代码审查工作流 - Phase 2 并行多 Agent 架构"""
 
     def __init__(self):
         self.graph = self._build_graph()
@@ -31,42 +66,156 @@ class CodeReviewWorkflow:
         """构建状态图"""
         builder = StateGraph(ReviewState)
 
-        builder.add_node("start", self._node_start)
-        builder.add_node("analyze", self._node_analyze)
-        builder.add_node("finish", self._node_finish)
+        # Add all nodes
+        builder.add_node("route", self._node_route)
+        builder.add_node("analyze_security", self._node_analyze_security)
+        builder.add_node("analyze_bug", self._node_analyze_bug)
+        builder.add_node("analyze_style", self._node_analyze_style)
+        builder.add_node("aggregate", self._node_aggregate)
+        builder.add_node("post_comments", self._node_post_comments)
 
-        builder.set_entry_point("start")
-        builder.add_edge("start", "analyze")
-        builder.add_edge("analyze", "finish")
-        builder.add_edge("finish", END)
+        builder.set_entry_point("route")
+
+        # Use conditional edges for fan-out from route node
+        # _route_to_agents returns a list of Send objects for parallel execution
+        builder.add_conditional_edges(
+            "route",
+            self._route_to_agents,
+            ["analyze_security", "analyze_bug", "analyze_style"]
+        )
+
+        # All agents converge to aggregate
+        builder.add_edge("analyze_security", "aggregate")
+        builder.add_edge("analyze_bug", "aggregate")
+        builder.add_edge("analyze_style", "aggregate")
+        builder.add_edge("aggregate", "post_comments")
+        builder.add_edge("post_comments", END)
 
         return builder
 
-    def _node_start(self, state: ReviewState) -> ReviewState:
-        """开始节点：什么都不做"""
-        return state
+    def _route_to_agents(self, state: ReviewState) -> list[Send]:
+        """Determine which agents to run based on router result
 
-    def _node_analyze(self, state: ReviewState) -> ReviewState:
-        """分析节点：调用 LLM 分析代码"""
-        from src.agents.code_reviewer import CodeReviewerAgent
+        Returns a list of Send objects for fan-out parallel execution.
+        Each Send object specifies the target node and passes the state.
+        """
+        routes = state.get("routes", {})
+        sends = []
 
-        agent = CodeReviewerAgent()
-        files = state.get("files", [])
+        if not routes:
+            # Default to all agents if no routes
+            sends.append(Send("analyze_security", state))
+            sends.append(Send("analyze_bug", state))
+            sends.append(Send("analyze_style", state))
+            return sends
 
-        # 如果没有 contents，从 patch 构建
+        # Collect which agents to run based on routes
+        run_security = False
+        run_bug = False
+        run_style = False
+
+        for filename, categories in routes.items():
+            if "security" in categories:
+                run_security = True
+            if "bug" in categories:
+                run_bug = True
+            if "style" in categories:
+                run_style = True
+
+        # Default to all agents if no specific routes matched
+        if not run_security and not run_bug and not run_style:
+            run_security = True
+            run_bug = True
+            run_style = True
+
+        if run_security:
+            sends.append(Send("analyze_security", state))
+        if run_bug:
+            sends.append(Send("analyze_bug", state))
+        if run_style:
+            sends.append(Send("analyze_style", state))
+
+        return sends
+
+    def _prepare_files(self, files: list) -> list:
+        """Ensure files have contents field populated from patch"""
         for f in files:
             if "contents" not in f:
                 f["contents"] = f.get("patch", "")
+        return files
 
-        result = agent.analyze_pr(
-            files=files,
-            pr_title=state.get("pr_title", ""),
-            pr_description=state.get("pr_description", ""),
-        )
+    def _node_route(self, state: ReviewState) -> dict:
+        """Router node: classify files to appropriate agents"""
+        from src.agents.router_agent import RouterAgent
 
-        state["review_comments"] = result.get("comments", [])
-        state["overall_status"] = result.get("overall_status", "success")
-        return state
+        agent = RouterAgent()
+        files = self._prepare_files(state.get("files", []))
+        result = agent.route(files)
+
+        # RouterAgent.route() returns {"routes": {"filename": ["category", ...]}}
+        # We pass through the routes directly
+        return result
+
+    def _node_analyze_security(self, state: ReviewState) -> dict:
+        """Security analysis node"""
+        from src.agents.security_agent import SecurityAgent
+
+        agent = SecurityAgent()
+        files = self._prepare_files(state.get("files", []))
+        results = []
+
+        for f in files:
+            result = agent.analyze(f["filename"], f.get("contents", ""))
+            results.append(result)
+
+        return {"agent_results": {"security": results}}
+
+    def _node_analyze_bug(self, state: ReviewState) -> dict:
+        """Bug detection node"""
+        from src.agents.bug_agent import BugAgent
+
+        agent = BugAgent()
+        files = self._prepare_files(state.get("files", []))
+        results = []
+
+        for f in files:
+            result = agent.analyze(f["filename"], f.get("contents", ""))
+            results.append(result)
+
+        return {"agent_results": {"bug": results}}
+
+    def _node_analyze_style(self, state: ReviewState) -> dict:
+        """Style analysis node"""
+        from src.agents.style_agent import StyleAgent
+
+        agent = StyleAgent()
+        files = self._prepare_files(state.get("files", []))
+        results = []
+
+        for f in files:
+            result = agent.analyze(f["filename"], f.get("contents", ""))
+            results.append(result)
+
+        return {"agent_results": {"style": results}}
+
+    def _node_aggregate(self, state: ReviewState) -> dict:
+        """Aggregate node: combine results from all agents"""
+        from src.agents.aggregator_agent import AggregatorAgent
+
+        agent_results = state.get("agent_results", {})
+        if not agent_results:
+            return {
+                "review_comments": [],
+                "overall_status": "success"
+            }
+
+        aggregator = AggregatorAgent()
+        result = aggregator.aggregate(agent_results)
+
+        return {
+            "review_comments": [c.model_dump() if hasattr(c, "model_dump") else c for c in result.get("comments", [])],
+            "overall_status": result.get("overall_status", "success")
+        }
 
     def _get_file_info(self, files: list) -> dict:
         """从 patch 中提取每个文件的信息，用于验证评论行号和 patch 有效性
@@ -106,8 +255,8 @@ class CodeReviewWorkflow:
                 file_info[filename] = {"line_count": 0, "has_patch": False}
         return file_info
 
-    def _node_finish(self, state: ReviewState) -> ReviewState:
-        """完成节点：发布评论到 GitHub"""
+    def _node_post_comments(self, state: ReviewState) -> dict:
+        """Post comments node: publish review comments to GitHub"""
         from src.github.client import GitHubClient
 
         try:
@@ -186,8 +335,6 @@ class CodeReviewWorkflow:
             print(f"Error posting comments: {e}")
             pass  # 评论失败不影响整体流程
 
-        if not state.get("overall_status"):
-            state["overall_status"] = "success"
         return state
 
     def run(
