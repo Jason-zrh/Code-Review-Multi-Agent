@@ -47,6 +47,11 @@ class GitHubClient:
             "Accept": "application/vnd.github+json",
             "X-GitHub-Api-Version": "2022-11-28",
         }
+        # 设置 HTTP 客户端超时和重试
+        # BUG FIX: 原代码没有设置超时，导致 GitHub API 响应慢时请求挂起
+        # 添加 30 秒超时防止长时间等待
+        self.timeout = httpx.Timeout(30.0, connect=10.0)
+        self.retry_count = 3
 
     def get_pr_files(self, owner: str, repo: str, pr_number: int) -> list[dict]:
         """获取 PR 改动的文件列表
@@ -60,10 +65,16 @@ class GitHubClient:
             文件列表，每个元素包含 filename, status, additions, deletions, patch
         """
         url = f"{self.BASE_URL}/repos/{owner}/{repo}/pulls/{pr_number}/files"
-        with httpx.Client(headers=self.headers) as client:
-            response = client.get(url)
-            response.raise_for_status()
-            return response.json()
+        for attempt in range(self.retry_count):
+            try:
+                with httpx.Client(headers=self.headers, timeout=self.timeout) as client:
+                    response = client.get(url)
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.TimeoutException:
+                if attempt == self.retry_count - 1:
+                    raise
+                continue
 
     def get_pr_details(self, owner: str, repo: str, pr_number: int) -> dict:
         """获取 PR 详情
@@ -72,10 +83,16 @@ class GitHubClient:
             PR 详细信息（标题、描述、作者等）
         """
         url = f"{self.BASE_URL}/repos/{owner}/{repo}/pulls/{pr_number}"
-        with httpx.Client(headers=self.headers) as client:
-            response = client.get(url)
-            response.raise_for_status()
-            return response.json()
+        for attempt in range(self.retry_count):
+            try:
+                with httpx.Client(headers=self.headers, timeout=self.timeout) as client:
+                    response = client.get(url)
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.TimeoutException:
+                if attempt == self.retry_count - 1:
+                    raise
+                continue
 
     def create_review_comment(
         self,
@@ -108,10 +125,16 @@ class GitHubClient:
             "path": path,
             "line": line,
         }
-        with httpx.Client(headers=self.headers) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
-            return response.json()
+        for attempt in range(self.retry_count):
+            try:
+                with httpx.Client(headers=self.headers, timeout=self.timeout) as client:
+                    response = client.post(url, json=payload)
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.TimeoutException:
+                if attempt == self.retry_count - 1:
+                    raise
+                continue
 
     def create_pr_review(
         self,
@@ -139,7 +162,13 @@ class GitHubClient:
             "event": "COMMENT",
             "comments": comments,
         }
-        with httpx.Client(headers=self.headers) as client:
-            response = client.post(url, json=payload)
-            response.raise_for_status()
-            return response.json()
+        for attempt in range(self.retry_count):
+            try:
+                with httpx.Client(headers=self.headers, timeout=self.timeout) as client:
+                    response = client.post(url, json=payload)
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.TimeoutException:
+                if attempt == self.retry_count - 1:
+                    raise
+                continue

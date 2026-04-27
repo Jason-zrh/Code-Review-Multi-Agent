@@ -38,7 +38,7 @@ def test_parse_github_pr_event():
     payload = {
         "action": "opened",
         "pull_request": {
-            "id": 123,
+            "number": 456,
             "title": "Fix bug",
             "body": "Description",
             "user": {"login": "testuser"},
@@ -50,5 +50,5 @@ def test_parse_github_pr_event():
     }
     event = parse_github_event("pull_request", payload)
     assert event["action"] == "opened"
-    assert event["pr"]["id"] == 123
+    assert event["pr"]["id"] == 456  # Uses number field mapped to id
     assert event["pr"]["title"] == "Fix bug"

@@ -14,6 +14,8 @@ def _merge_agent_results(left: dict, right: dict) -> dict:
 
     Each node returns {"agent_results": {"agent_name": [...]}}.
     This reducer combines all agent results into a single dict.
+    NOTE: Nodes return {"agent_results": {...}}, so we extract the inner dict
+    and merge it directly without wrapping in another "agent_results" key.
     """
     result = {}
     # Process left
@@ -27,10 +29,11 @@ def _merge_agent_results(left: dict, right: dict) -> dict:
                         result[agent_name] = result.get(agent_name, []) + agent_data
             else:
                 result[key] = value
-    # Process right
+    # Process right - extract inner agent_results dict
     if right:
         for key, value in right.items():
             if key == "agent_results" and isinstance(value, dict):
+                # value is {"security": [...], "bug": [...], ...}
                 for agent_name, agent_data in value.items():
                     if agent_name not in result:
                         result[agent_name] = agent_data
@@ -38,7 +41,8 @@ def _merge_agent_results(left: dict, right: dict) -> dict:
                         result[agent_name] = result.get(agent_name, []) + agent_data
             else:
                 result[key] = value
-    return {"agent_results": result}
+    # Return the merged dict directly, not wrapped
+    return result
 
 
 class ReviewState(TypedDict):
@@ -99,7 +103,26 @@ class CodeReviewWorkflow:
         Returns a list of Send objects for fan-out parallel execution.
         Each Send object specifies the target node and passes the state.
         """
-        routes = state.get("routes", {})
+        # BUG FIX: RouterAgent.route() returns {"routes": {...}}, so state["routes"]["routes"] is the actual data
+        # Categories can be a list or a string - handle both cases
+        print(f"[DEBUG] state.keys() = {list(state.keys())}")
+        print(f"[DEBUG] state['routes'] type = {type(state.get('routes'))}, value = {state.get('routes')}")
+
+        # Handle both possible structures:
+        # 1. {"routes": {"filename": [...]}} -> extract inner dict
+        # 2. {"filename": [...]} -> use directly (no "routes" wrapper)
+        routes_container = state.get("routes", {})
+        if "routes" in routes_container and isinstance(routes_container.get("routes"), dict):
+            raw_routes = routes_container["routes"]
+        else:
+            # Already the inner dict
+            raw_routes = routes_container
+
+        routes = {}
+        for filename, categories in raw_routes.items():
+            if isinstance(categories, str):
+                categories = [categories]
+            routes[filename] = categories
         sends = []
 
         if not routes:
