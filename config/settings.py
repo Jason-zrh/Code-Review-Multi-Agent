@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
 
+    # 大型 PR 处理配置（Context Window 分片策略）
+    max_context_tokens: int = 28000
+    max_file_chunk_lines: int = 500
+    enable_batching: bool = True
+
     # pydantic v2 写法
     model_config = SettingsConfigDict(
         env_file=".env",

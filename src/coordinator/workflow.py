@@ -2,6 +2,7 @@ from typing import TypedDict, NotRequired, Annotated
 from langgraph.types import Send
 from langgraph.graph import StateGraph, END
 from src.models.schemas import ReviewComment
+from src.utils.token_counter import batch_by_tokens, MAX_CONTEXT_TOKENS
 
 
 # ============================================================
@@ -180,44 +181,59 @@ class CodeReviewWorkflow:
         return result
 
     def _node_analyze_security(self, state: ReviewState) -> dict:
-        """Security analysis node"""
+        """Security analysis node with file batching support"""
         from src.agents.security_agent import SecurityAgent
 
         agent = SecurityAgent()
         files = self._prepare_files(state.get("files", []))
         results = []
 
-        for f in files:
-            result = agent.analyze(f["filename"], f.get("contents", ""))
-            results.append(result)
+        # 按 token limit 分批处理
+        batches = batch_by_tokens(files)
+        print(f"[Security] Processing {len(files)} files in {len(batches)} batches")
+
+        for batch_idx, batch in enumerate(batches):
+            for f in batch:
+                result = agent.analyze(f["filename"], f.get("contents", ""))
+                results.append(result)
 
         return {"agent_results": {"security": results}}
 
     def _node_analyze_bug(self, state: ReviewState) -> dict:
-        """Bug detection node"""
+        """Bug detection node with file batching support"""
         from src.agents.bug_agent import BugAgent
 
         agent = BugAgent()
         files = self._prepare_files(state.get("files", []))
         results = []
 
-        for f in files:
-            result = agent.analyze(f["filename"], f.get("contents", ""))
-            results.append(result)
+        # 按 token limit 分批处理
+        batches = batch_by_tokens(files)
+        print(f"[Bug] Processing {len(files)} files in {len(batches)} batches")
+
+        for batch_idx, batch in enumerate(batches):
+            for f in batch:
+                result = agent.analyze(f["filename"], f.get("contents", ""))
+                results.append(result)
 
         return {"agent_results": {"bug": results}}
 
     def _node_analyze_style(self, state: ReviewState) -> dict:
-        """Style analysis node"""
+        """Style analysis node with file batching support"""
         from src.agents.style_agent import StyleAgent
 
         agent = StyleAgent()
         files = self._prepare_files(state.get("files", []))
         results = []
 
-        for f in files:
-            result = agent.analyze(f["filename"], f.get("contents", ""))
-            results.append(result)
+        # 按 token limit 分批处理
+        batches = batch_by_tokens(files)
+        print(f"[Style] Processing {len(files)} files in {len(batches)} batches")
+
+        for batch_idx, batch in enumerate(batches):
+            for f in batch:
+                result = agent.analyze(f["filename"], f.get("contents", ""))
+                results.append(result)
 
         return {"agent_results": {"style": results}}
 
