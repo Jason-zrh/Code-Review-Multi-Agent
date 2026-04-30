@@ -36,8 +36,8 @@ Code-Review-Agent/
 │   ├── main.py                    # FastAPI 入口
 │   ├── models/schemas.py          # 数据模型 (Pydantic)
 │   ├── github/
-│   │   ├── webhook.py            # Webhook 验证和解析
-│   │   └── client.py             # GitHub API 客户端
+│   │   ├── webhook.py             # Webhook 验证和解析
+│   │   └── client.py              # GitHub API 客户端
 │   ├── coordinator/
 │   │   └── workflow.py            # LangGraph 工作流
 │   ├── agents/
@@ -45,10 +45,10 @@ Code-Review-Agent/
 │   │   ├── security_agent.py      # 安全分析
 │   │   ├── bug_agent.py           # Bug 检测
 │   │   ├── style_agent.py         # 风格分析
-│   │   └── aggregator_agent.py     # 结果汇总
-│   └── api/routes.py               # API 路由
-├── tests/                          # 36 个测试用例
-├── docs/                           # 设计文档
+│   │   └── aggregator_agent.py    # 结果汇总
+│   └── api/routes.py              # API 路由
+├── tests/                         # 36 个测试用例
+├── docs/                          # 设计文档
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -61,8 +61,7 @@ Code-Review-Agent/
 
 - Python 3.11+
 - GitHub Personal Access Token
-- MiniMax API Key
-- ngrok或使用云服务器部署webhook
+- MiniMax / OpenAI API Key
 
 ### 安装
 
@@ -80,43 +79,82 @@ python3.11 -m pip install -r requirements.txt
 # GitHub 配置
 GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
-# MiniMax API 配置 或 使用OpenAI API也可以
+# LLM API 配置（支持 MiniMax 或 OpenAI 兼容接口）
 OPENAI_API_KEY=xxxxxxxxxxxxxxxx
 OPENAI_BASE_URL=https://api.minimaxi.com/v1
-
-# 服务器配置
-API_HOST=0.0.0.0
-API_PORT=8000
 ```
+
+### 选择部署方式
+
+根据你的场景选择以下一种部署方式：
+
+> **重要说明**：Webhook 配置和怎么运行服务无关。关键是 **GitHub 必须能访问到你的服务地址**。
+>
+> - **本地电脑**：GitHub 无法访问你的 localhost，必须用 ngrok
+> - **云服务器**：GitHub 可以访问服务器 IP，Webhook 直接指向服务器地址
+
+---
+
+## 方式一：云服务器部署（推荐）
+
+适用于：有公网 IP 的服务器，长期运行
 
 ### 运行
 
-```bash
-# 开发模式
-python3.11 -m uvicorn src.main:app --reload --port 8000
+选择任意一种启动方式：
 
-# 生产模式
-python3.11 -m uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 4
+**方式 A：直接运行**
+```bash
+python3.11 -m uvicorn src.main:app --host 0.0.0.0 --port 8000
 ```
 
-### GitHub Webhook 配置
+**方式 B：Docker 运行**
+```bash
+docker-compose up -d
+docker-compose logs -f   # 查看日志
+```
 
-1. **本地开发启动 ngrok**：
+### 配置 GitHub Webhook
+
+1. 确保服务器防火墙开放 8000 端口
+2. 配置 Webhook：
+```bash
+gh api repos/{owner}/{repo}/hooks -X POST \
+  -F url="http://你的服务器IP:8000/webhook" \
+  -F events[]=pull_request
+```
+3. 测试：创建或更新 PR 触发审查
+```bash
+gh pr create --title "Test PR" --body "Testing webhook"
+```
+
+---
+
+## 方式二：本地调试
+
+适用于：在本地电脑开发调试
+
+> ⚠️ **关键限制**：GitHub 无法访问你的 localhost，所以必须用 ngrok 打通网络
+
+### 运行
+
+1. 启动服务（二选一）：
+```bash
+# 方式 A：直接运行
+python3.11 -m uvicorn src.main:app --reload --port 8000
+
+# 方式 B：Docker 运行
+docker-compose up
+```
+
+2. 启动 ngrok 暴露公网地址：
 ```bash
 ngrok http 8000
 ```
 
-2. **配置 Webhook**：
-```bash
-gh api repos/{owner}/{repo}/hooks -X POST \
-  -F url="https://你的-ngrok-url.ngrok.io/webhook" \
-  -F events[]=pull_request
-```
+3. 配置 Webhook（使用 ngrok 提供的临时 URL，如 `https://xxxx.ngrok.io/webhook`）
 
-3. **测试** - 创建或更新 PR 触发审查：
-```bash
-gh pr create --title "Test PR" --body "Testing webhook"
-```
+> 注意：ngrok 免费版每次重启 URL 会变，不适合长期使用
 
 ## 架构设计
 
@@ -176,48 +214,6 @@ pytest tests/ -v
 pytest tests/ --cov=src --cov-report=term-missing
 ```
 
-## 部署
-
-### Docker 部署
-
-```bash
-# 构建镜像
-docker build -t code-review-agent .
-
-# 运行容器
-docker run -p 8000:8000 --env-file .env code-review-agent
-
-# 或使用 docker-compose（包含 Redis，可选）
-docker-compose up
-```
-
-### 生产环境检查清单
-
-- [ ] 启用 Webhook 签名验证（在 `src/github/webhook.py` 中取消注释）
-- [ ] 设置安全的 `GITHUB_WEBHOOK_SECRET` 环境变量
-- [ ] 使用生产级 WSGI 服务器（gunicorn）
-- [ ] 配置日志
-- [ ] 设置监控告警
-
-## API 接口
-
-### 健康检查
-
-```
-GET /health
-Response: {"status": "ok"}
-```
-
-### Webhook
-
-```
-POST /webhook
-Headers: X-GitHub-Event: pull_request
-Body: GitHub webhook payload
-
-Response: {"status": "ok", "result": {...}}
-```
-
 ## 技术挑战与解决方案
 
 | 问题 | 解决方案 |
@@ -229,23 +225,15 @@ Response: {"status": "ok", "result": {...}}
 | HTTP 超时 | 添加 30 秒超时和 3 次重试 |
 | 状态合并 | 使用自定义 reducer 合并 LangGraph 并行节点 |
 
-## 项目状态
 
-| 阶段 | 状态 | 说明 |
-|------|------|------|
-| Phase 1 | ✅ 已完成 | 基础 GitHub 集成 |
-| Phase 2 | ✅ 已完成 | Multi-Agent 并行架构 |
-
-详细状态见 [docs/PROJECT_STATUS.md](docs/PROJECT_STATUS.md)。
 
 ## 后续规划
 
-详见 [docs/future/PHASE3_ROADMAP.md](docs/future/PHASE3.md)：
-
+详见 [docs/FUTURE.md](docs/FUTURE.md)：
 - Webhook 签名验证
 - 数据库存储（审查历史）
 - Markdown 汇总报告
 - 多仓库支持
 - C++ 静态分析
 - 消息队列（Redis）
-- GitHub App 集成
+- GitHub App 集成       

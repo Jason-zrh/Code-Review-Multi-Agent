@@ -34,10 +34,10 @@ async def github_webhook(
     # 获取请求体原始字节
     payload = await request.body()
 
-    # 暂时禁用签名验证（本地测试用）
-    # if x_hub_signature_256:
-    #     if not verify_webhook_signature(payload, x_hub_signature_256):
-    #         raise HTTPException(status_code=401, detail="Invalid signature")
+    # 验证 GitHub Webhook 签名
+    if x_hub_signature_256:
+        if not verify_webhook_signature(payload, x_hub_signature_256):
+            raise HTTPException(status_code=401, detail="Invalid signature")
 
     # 解析 JSON 和事件类型
     data = await request.json()

@@ -253,14 +253,21 @@ class CodeReviewWorkflow:
             filename = f.get("filename", "")
             patch = f.get("patch", "")
             if patch and filename:
+                # BUG FIX: 行号范围计算错误
+                # 问题：之前的代码只提取了 line_count，没有提取 start_line
+                # 导致当 patch 不是从第 1 行开始时，行号验证失败
+                # 例如：@@ -63,3 +63,11 @@ 表示新文件从第 63 行开始，总共 11 行
+                # 旧代码会得到 line_count=11，但不知道起始行是 63
+                # LLM 可能生成行号 1（旧文件行号），这在 patch 中是无效的
                 # 解析 patch 的 hunk header 获取行数信息
-                # 格式: @@ -start,count +start,count @@
-                # 例如: @@ -1,33 +1,37 @@ 表示原文件 33 行，新文件 37 行
                 import re
-                match = re.search(r'@@ -\d+,\d+ \+\d+,(\d+) @@', patch)
+                match = re.search(r'@@ -\d+,\d+ \+(\d+),(\d+) @@', patch)
                 if match:
+                    start_line = int(match.group(1))  # 新文件的起始行号
+                    line_count = int(match.group(2))  # 新文件的总行数
                     file_info[filename] = {
-                        "line_count": int(match.group(1)),
+                        "start_line": start_line,  # 起始行号（GitHub API 需要绝对行号）
+                        "line_count": line_count,
                         "has_patch": True
                     }
                 else:
@@ -268,14 +275,15 @@ class CodeReviewWorkflow:
                     plus_lines = [l for l in patch.splitlines() if l.startswith('+') and not l.startswith('+++')]
                     if plus_lines:
                         file_info[filename] = {
+                            "start_line": 1,
                             "line_count": len(plus_lines),
                             "has_patch": True
                         }
                     else:
-                        file_info[filename] = {"line_count": 0, "has_patch": False}
+                        file_info[filename] = {"start_line": 0, "line_count": 0, "has_patch": False}
             elif filename:
                 # 没有 patch 的文件，跳过
-                file_info[filename] = {"line_count": 0, "has_patch": False}
+                file_info[filename] = {"start_line": 0, "line_count": 0, "has_patch": False}
         return file_info
 
     def _node_post_comments(self, state: ReviewState) -> dict:
@@ -316,16 +324,25 @@ class CodeReviewWorkflow:
                     # GitHub PR Review API 无法在空文件或纯文本文件上发表评论
                     # 这些文件的 patch 为空或无效（如 .txt 文件）
                     # 会导致 "Line could not be resolved" 的 422 错误
-                    info = file_info.get(path, {"has_patch": False, "line_count": 0})
+                    info = file_info.get(path, {"has_patch": False, "start_line": 1, "line_count": 0})
                     if not info["has_patch"] or info["line_count"] == 0:
                         skipped += 1
                         continue
 
-                    # 验证行号有效性：LLM 生成的行号可能超出文件实际范围
-                    # 如果 LLM 报告的 line 号大于文件的总行数，会导致 422 错误
-                    # 需要将行号限制在文件实际行数范围内
-                    max_line = info["line_count"]
-                    if line > max_line:
+                    # BUG FIX: LLM 生成的行号可能是文件绝对行号，而非 patch 相对行号
+                    # 问题：LLM 通常基于文件绝对行号生成评论位置（如"第 1 行的 SQL 注入"）
+                    # 但 GitHub PR Review API 需要 patch 中的行号
+                    # 如果 patch 不是从第 1 行开始，直接使用 LLM 的行号会导致 422 错误
+                    # 例如：patch 从第 63 行开始，LLM 可能报告"第 1 行有问题"
+                    # 解决方案：同时检查起始行号和最大行号，确保行号在有效范围内
+                    start_line = info.get("start_line", 1)
+                    max_line = start_line + info["line_count"] - 1
+
+                    if line < start_line:
+                        # LLM 的行号基于旧文件或文件开头，使用 patch 起始行号
+                        line = start_line
+                    elif line > max_line:
+                        # LLM 的行号超出 patch 范围，限制到最大行号
                         line = max_line
 
                     if isinstance(c, dict):

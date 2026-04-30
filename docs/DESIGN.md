@@ -1,113 +1,144 @@
-# Code Review Multi-Agent - Design Document
+# Code Review Multi-Agent - 设计文档
 
-> Created: 2026/04/26 | Last Updated: 2026/04/27 | Status: **Implemented**
 
-## 1. Project Overview
+## 1. 项目概述
 
-**Code Review Multi-Agent** is an AI-powered code review system that automatically analyzes GitHub Pull Requests using specialized agents for different review aspects.
+**Code Review Multi-Agent** 是一个基于 AI 的代码审查系统，通过 GitHub Webhook 自动接收 Pull Request 事件，使用专门的 AI Agent 并行分析代码安全问题、Bug 和代码风格，并将审查结果直接评论到 PR 上。
 
-## 2. Architecture Design
+## 2. 技术选型
 
-### 2.1 Multi-Agent Framework Choice
+| 层级 | 技术 | 选择理由 |
+|------|------|----------|
+| Agent 框架 | LangGraph | 原生支持 Multi-Agent 编排，内置状态管理和条件路由 |
+| LLM | MiniMax API | OpenAI 兼容接口，成本低 |
+| Web 框架 | FastAPI | 异步支持，自动生成 API 文档 |
+| HTTP 客户端 | httpx | 异步请求，超时和重试支持 |
+| 数据验证 | Pydantic | 类型安全，自动序列化 |
+| 测试框架 | pytest | Python 标准测试框架 |
 
-**LangGraph** was chosen over plain LangChain for:
-- First-class support for Multi-Agent orchestration
-- Built-in state management with reducers
-- Conditional edges for fan-out/fan-in patterns
-- Production-ready for agent workflows
+## 3. 架构设计
 
-### 2.2 Agent Architecture
+### 3.1 Multi-Agent 工作流
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Router Agent                           │
-│  Classifies files: Security | Bug | Style | All             │
-└──────────────────────────┬──────────────────────────────────┘
-                           │
-         ┌─────────────────┼─────────────────┐
-         ▼                 ▼                 ▼
-┌─────────────┐   ┌─────────────┐   ┌─────────────┐
-│  Security   │   │    Bug      │   │   Style     │
-│   Agent     │   │   Agent     │   │   Agent     │
-│             │   │             │   │             │
-│ • SQL inj   │   │ • Null ptr  │   │ • Docs      │
-│ • Secrets   │   │ • Div/zero  │   │ • Naming    │
-│ • Path trav │   │ • Index OOB │   │ • Format    │
-└──────┬──────┘   └──────┬──────┘   └──────┬──────┘
-       │                 │                 │
-       └─────────────────┼─────────────────┘
-                         ▼
-              ┌─────────────────────┐
-              │  Aggregator Agent  │
-              │  • Combine results  │
-              │  • Generate summary │
-              └─────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                         GitHub PR                                │
+│                    (opened / synchronize)                       │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                         Route Node                               │
+│                    (RouterAgent 分类文件)                        │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          │                   │                   │
+          ▼                   ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ Security Agent  │ │   Bug Agent     │ │  Style Agent    │
+│   (并行执行)     │ │   (并行执行)     │ │   (并行执行)     │
+│                 │ │                 │ │                 │
+│ • SQL 注入      │ │ • 空指针        │ │ • 缺失文档     │
+│ • 命令注入      │ │ • 除零错误      │ │ • 命名不规范   │
+│ • 路径遍历      │ │ • 数组越界      │ │ • 代码格式     │
+│ • 硬编码密钥    │ │ • 逻辑错误      │ │                │
+└────────┬────────┘ └────────┬────────┘ └────────┬────────┘
+         │                   │                   │
+         └───────────────────┼───────────────────┘
+                             ▼
+              ┌─────────────────────────────┐
+              │      Aggregate Node         │
+              │    (AggregatorAgent 汇总)    │
+              └─────────────┬───────────────┘
+                            ▼
+              ┌─────────────────────────────┐
+              │     Post Comments Node       │
+              │   (发布到 GitHub PR)         │
+              └─────────────────────────────┘
 ```
 
-### 2.3 State Management
+### 3.2 状态管理
 
-LangGraph `TypedDict` with custom reducer for parallel node results:
+使用 LangGraph `TypedDict` 定义工作流状态，并行节点结果通过自定义 reducer 合并：
 
 ```python
 class ReviewState(TypedDict):
-    pr_id: int
-    repo_owner: str
-    repo_name: str
-    files: list
-    routes: dict  # Router result
-    agent_results: Annotated[dict, _merge_agent_results]  # Parallel merge
-    review_comments: list
-    overall_status: str
+    pr_id: int                           # PR 编号
+    repo_owner: str                      # 仓库所有者
+    repo_name: str                       # 仓库名
+    files: list                          # 改动的文件列表
+    routes: dict                         # 路由结果
+    agent_results: Annotated[dict, _merge_agent_results]  # 并行节点结果
+    review_comments: list                # 审查评论
+    overall_status: str                  # 总体状态
 ```
 
-### 2.4 Data Flow
+### 3.3 Agent 设计
+
+| Agent | 职责 | 检测问题 |
+|-------|------|----------|
+| RouterAgent | 根据文件类型分类应该用哪些 Agent 审查 | - |
+| SecurityAgent | 安全漏洞检测 | SQL 注入、命令注入、路径遍历、XSS、硬编码密钥 |
+| BugAgent | Bug 检测 | 空指针、除零错误、数组越界、逻辑错误 |
+| StyleAgent | 代码风格分析 | 缺失文档、命名不规范、代码格式 |
+| AggregatorAgent | 汇总所有结果 | 生成摘要，确定总体状态 |
+
+## 4. 目录结构
 
 ```
-1. GitHub Webhook (PR opened/sync) → FastAPI /webhook
-2. Parse PR files → Prepare file contents
-3. Route Node → Classify files to agents
-4. Agent Nodes (parallel) → Analyze code
-5. Aggregate Node → Combine and summarize
-6. Post Comments → GitHub PR Review API
+Code-Review-Agent/
+├── src/
+│   ├── main.py                    # FastAPI 入口
+│   ├── api/
+│   │   └── routes.py             # API 路由 (/webhook)
+│   ├── models/
+│   │   └── schemas.py            # Pydantic 数据模型
+│   ├── github/
+│   │   ├── client.py            # GitHub API 客户端
+│   │   └── webhook.py           # Webhook 签名验证
+│   ├── coordinator/
+│   │   └── workflow.py          # LangGraph 工作流
+│   └── agents/
+│       ├── router_agent.py      # 路由 Agent
+│       ├── security_agent.py    # 安全 Agent
+│       ├── bug_agent.py        # Bug Agent
+│       ├── style_agent.py       # 风格 Agent
+│       └── aggregator_agent.py  # 聚合 Agent
+├── tests/                        # 测试用例
+├── docs/                         # 文档
+├── Dockerfile
+├── docker-compose.yml
+└── requirements.txt
 ```
 
-## 3. Technology Stack
+## 5. 关键技术决策
 
-| Layer | Technology | Version | Rationale |
-|-------|------------|---------|-----------|
-| Agent Framework | LangGraph | Latest | Multi-Agent orchestration |
-| LLM | MiniMax API | v1 | OpenAI-compatible, cost-effective |
-| API Framework | FastAPI | Latest | Async, auto-docs |
-| HTTP Client | httpx | Latest | Async, timeout support |
-| Validation | Pydantic | Latest | Type safety |
-| Testing | pytest | Latest | Standard Python testing |
+### 5.1 LangGraph vs LangChain
 
-## 4. Key Design Decisions
+选择 LangGraph 而非纯 LangChain：
+- 原生支持 Multi-Agent 编排
+- 内置状态管理和 Reducer
+- 条件边支持 Fan-out/Fan-in 模式
+- 生产级 Agent 工作流支持
 
-### 4.1 Phase 1: Single Agent → Phase 2: Multi-Agent
+### 5.2 Webhook vs GitHub App
 
-**Decision**: Start with single agent, evolve to multi-agent
+当前使用 Webhook，Phase 3 可升级为 GitHub App：
 
-**Rationale**:
-- Phase 1 for quick MVP and webhook validation
-- Phase 2 for specialized, higher-quality analysis
-- LangGraph makes migration straightforward
+| 特性 | Webhook | GitHub App |
+|------|---------|------------|
+| 安装 | 每个仓库单独配置 | 一次安装，所有仓库生效 |
+| ngrok | 需要（本地开发） | 不需要 |
+| 权限 | 全部读写 | 精细控制 |
 
-### 4.2 GitHub Webhook → GitHub App (Future)
+### 5.3 状态合并策略
 
-**Decision**: Phase 1 uses Webhook, Phase X upgrades to GitHub App
-
-**Rationale**:
-- Webhook: Quick setup, no OAuth flow
-- GitHub App: Better permissions, events, no ngrok needed
-
-### 4.3 State Merging Strategy
-
-**Decision**: Custom reducer for parallel node results
+并行 Agent 节点使用自定义 Reducer 合并结果：
 
 ```python
 def _merge_agent_results(left: dict, right: dict) -> dict:
-    """Merge agent_results without double-wrapping"""
+    """合并并行节点结果，避免双重包装"""
     result = {}
     for key, value in chain(left.items(), right.items()):
         if key == "agent_results" and isinstance(value, dict):
@@ -118,45 +149,44 @@ def _merge_agent_results(left: dict, right: dict) -> dict:
                     result[agent_name] = result.get(agent_name, []) + agent_data
         else:
             result[key] = value
-    return result  # Return dict directly, not wrapped
+    return result
 ```
 
-### 4.4 HTTP Timeout & Retry
+## 6. 已知问题与解决
 
-**Decision**: 30s timeout with 3 retries for all GitHub API calls
+| 问题 | 原因 | 解决方案 |
+|------|------|----------|
+| `'str' object has no attribute 'get'` | 状态合并返回嵌套字典 | 直接返回合并结果，不包装 |
+| GitHub API 超时 | 未配置超时 | 添加 30 秒超时 + 3 次重试 |
+| `state['routes']` 为 None | LangGraph 状态更新时机 | 默认使用所有 Agent |
+| PR ID vs Number 混淆 | GitHub API 使用不同 ID | 使用 PR 编号调用 API |
+| Commit SHA 无效 | "HEAD" 不是有效 SHA | 从 PR 详情获取实际 SHA |
+| 空文件评论 | GitHub API 拒绝空 diff 评论 | 跳过无有效 patch 的文件 |
+| 行号越界 | LLM 可能生成无效行号 | 将行号限制在文件范围内 |
 
-**Rationale**:
-- GitHub API can be slow or rate-limited
-- Prevents request hanging
-- Exponential backoff via retries
+## 7. 测试覆盖
 
-## 5. Security Considerations
+| 测试文件 | 覆盖内容 |
+|----------|----------|
+| test_workflow.py | 工作流状态管理、路由逻辑 |
+| test_router_agent.py | 文件分类逻辑 |
+| test_specialized_agents.py | Security/Bug/Style Agent |
+| test_aggregator_agent.py | 结果聚合 |
+| test_github_client.py | GitHub API 客户端 |
+| test_schemas.py | Pydantic 模型验证 |
+| test_routes.py | API 端点行为 |
 
-1. **Webhook Signature Verification**: Commented out for local testing
-2. **GitHub Token**: Environment variable, never hardcoded
-3. **LLM Output**: Validated via Pydantic models
-4. **Comment Line Numbers**: Validated against file line count
+## 8. 当前限制
 
-## 6. Testing Strategy
+1. **Webhook 签名验证**：已实现但默认关闭（本地测试用）
+2. **单仓库支持**：当前配置适用于单个仓库
+3. **无数据库**：审查历史未持久化
+4. **同步处理**：无消息队列处理突发流量
 
-- **Unit Tests**: Each agent, client method, schema validation
-- **Integration Tests**: Workflow end-to-end (mocked LLM)
-- **Manual Tests**: Real GitHub PR with test repository
+## 9. Phase 规划
 
-## 7. Future Extensions
-
-### Phase 3: Enhanced Features
-- Summary report with markdown formatting
-- Review dashboard/database
-- Multiple repository support
-
-### Phase 4: Advanced Analysis
-- C++ static analysis (clang-tidy, cppcheck)
-- ML-based issue classification
-- Custom rule DSL
-
-## 8. Performance Considerations
-
-- **Parallel Execution**: 3 agents run concurrently via LangGraph Send
-- **LLM Calls**: One call per file per agent
-- **GitHub API**: Batched review comments in single request
+| Phase | 状态 | 说明 |
+|-------|------|------|
+| Phase 1 | ✅ 已完成 | 基础 GitHub 集成，单 Agent |
+| Phase 2 | ✅ 已完成 | Multi-Agent 并行架构 |
+| Phase 3 | 规划中 | Webhook 验证、数据库、报告、多仓库 |
